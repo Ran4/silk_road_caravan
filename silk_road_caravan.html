@@ -144,8 +144,34 @@
       { q: -1, r: 5, name: "Emerald Pool", emoji: "🌴" }
     ];
 
+    const waterTiles = [
+      { q: 6, r: -5 },
+      { q: 6, r: -4 },
+      { q: 6, r: -3 },
+      { q: 5, r: -4 },
+      { q: 1, r: 1 },
+      { q: 1, r: 2 },
+      { q: 2, r: 1 },
+      { q: -1, r: -2 },
+      { q: 0, r: -2 },
+      // Near Samarkand
+      { q: 4, r: -3 },
+      { q: 3, r: -2 },
+      { q: 3, r: -1 },
+      { q: 2, r: 0 },
+      // Near Baghdad (Tigris)
+      { q: 5, r: 0 },
+      { q: 4, r: 1 },
+      { q: 5, r: -1 },
+      { q: 3, r: 1 }
+    ];
+
     function getCity(q, r) {
       return cities.find(city => city.q === q && city.r === r);
+    }
+
+    function getWater(q, r) {
+      return waterTiles.find(w => w.q === q && w.r === r);
     }
 
     const gameItems = [
@@ -153,7 +179,8 @@
       { id: 'food_preserves', name: 'Food Preserves', price: 24, description: 'Increases maximum food capacity to 35' },
       { id: 'silk_bags', name: 'Silk Bags', price: 40, description: 'Increases cargo capacity to 30 items' },
       { id: 'map_scrolls', name: 'Map Scrolls', price: 36, description: 'Increases view distance to 3 hexes' },
-      { id: 'camel_shoes', name: 'Camel Shoes', price: 20, description: 'Movement to cities and oases costs no supplies' }
+      { id: 'camel_shoes', name: 'Camel Shoes', price: 20, description: 'Movement to cities and oases costs no supplies' },
+      { id: 'boat', name: 'Boat', price: 50, description: 'Allows crossing water tiles (rivers, lakes, seas)' }
     ];
 
     function getRandomCityItems() {
@@ -219,9 +246,11 @@
     function getMovementCost(q, r) {
       const city = getCity(q, r);
       const oasis = getOasis(q, r);
-      
+      const water = getWater(q, r);
+
       if (city || oasis) return { food: 1 };
-      
+      if (water) return { food: 1 };  // Sailing is easy
+
       const pathWear = getPathWear(q, r);
       // Cost starts at 5 for untraveled, goes down to 1 for well-traveled (200 wear)
       // Evenly distributed: 0-49=5, 50-99=4, 100-149=3, 150-199=2, 200=1
@@ -320,20 +349,23 @@
         
         const city = getCity(c.q, c.r);
         const oasis = getOasis(c.q, c.r);
+        const water = getWater(c.q, c.r);
         const current = (c.q === state.pos.q && c.r === state.pos.r);
         const pathWear = getPathWear(c.q, c.r);
-        
+
         ctx.beginPath();
         for (let i = 0; i < 6; i++) {
           const ang = Math.PI/180 * (60 * i - 30);
           ctx[i === 0 ? 'moveTo' : 'lineTo'](x + size * state.zoom * Math.cos(ang), y + size * state.zoom * Math.sin(ang));
         }
         ctx.closePath();
-        
+
         if (city) {
           ctx.fillStyle = current ? '#ffd580' : '#ffe0b3';
         } else if (oasis) {
           ctx.fillStyle = current ? '#90ee90' : '#98fb98';
+        } else if (water) {
+          ctx.fillStyle = current ? '#6eb8d3' : '#7ec8e3';
         } else {
           let baseColor = current ? '#ffaced' : '#faf0f5';
           
@@ -359,7 +391,7 @@
         
         ctx.fill();
         ctx.lineWidth = current ? 4 : 1;
-        ctx.strokeStyle = city ? '#cc9a00' : oasis ? '#228b22' : '#c69c6d';
+        ctx.strokeStyle = city ? '#cc9a00' : oasis ? '#228b22' : water ? '#2060a0' : '#c69c6d';
         ctx.stroke();
         
         if (pathWear > 20) {
@@ -394,8 +426,13 @@
           ctx.textAlign = 'center';
           ctx.fillText(oasis.emoji, x, y - 8 * state.zoom);
           ctx.fillText(oasis.name, x, y + 8 * state.zoom);
+        } else if (water) {
+          ctx.fillStyle = '#1a5090';
+          ctx.font = `${14 * state.zoom}px sans-serif`;
+          ctx.textAlign = 'center';
+          ctx.fillText('🌊', x, y + 5 * state.zoom);
         }
-        
+
         if (current) {
           ctx.fillStyle = '#ff6600';
           ctx.font = `${20 * state.zoom}px sans-serif`;
@@ -646,7 +683,14 @@
         showToast('Can only move to adjacent hexes!');
         return;
       }
-      
+
+      // Check for water tiles
+      const water = getWater(targetQ, targetR);
+      if (water && !state.items.has('boat')) {
+        showToast('Cannot cross water without a boat!');
+        return;
+      }
+
       const movementCost = getMovementCost(targetQ, targetR);
       
       if (state.supplies.food < movementCost.food) {
