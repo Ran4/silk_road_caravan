@@ -1,0 +1,733 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Silk Road Caravan Prototype</title>
+  <style>
+    body { font-family: sans-serif; background: #faf0e6; margin: 0; display: flex; height: 100vh; }
+    #map { flex: 1; background: #fff8f0; position: relative; }
+    canvas { display: block; margin: auto; cursor: pointer; }
+    #zoom-toggle { position: absolute; top: 10px; right: 10px; background: rgba(245, 224, 195, 0.9); border: 1px solid #c69c6d; border-radius: 4px; padding: 0.3em 0.6em; cursor: pointer; font-size: 0.8em; z-index: 5; }
+    #zoom-toggle:hover { background: rgba(232, 209, 179, 0.9); }
+    #sidebar { width: 440px; background: #f5f0eb; padding: 1em; box-shadow: -2px 0 5px rgba(0,0,0,0.1); overflow-y: auto; position: relative; font-size: 1em; transition: width 0.3s ease; }
+    #sidebar.zoomed { font-size: 1.1em; width: 500px; }
+    #sidebar.zoomed button { font-size: 1.1em; padding: 0.33em 0.66em; }
+    #sidebar.zoomed input[type="number"] { font-size: 1.1em; }
+    h1 { text-align: center; margin: 0 0 1em; color: #8b4513; }
+    .stats div, .prices div { margin: 0.5em 0; }
+    .trade-row { display: flex; justify-content: space-between; margin: 0.5em 0; }
+    .actions div { margin-top: 1em; color: #555; font-size: 0.9em; }
+    button { padding: 0.3em 0.6em; border-radius: 4px; border: 1px solid #c69c6d; background: #f5e0c3; cursor: pointer; transition: background 0.2s; }
+    button:hover { background: #e8d1b3; }
+    button:disabled { background: #ddd; color: #999; cursor: not-allowed; }
+    #log { height: 120px; overflow-y: auto; border-top: 1px solid #d3bfa6; padding-top: 0.5em; margin-top: 1em; font-size: 0.9em; background: #fff; border-radius: 4px; padding: 0.5em; }
+    #toast { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); padding: 0.5em 1em; background: rgba(0,0,0,0.7); color: #fff; border-radius: 4px; opacity: 0; transition: opacity 0.3s; pointer-events: none; z-index: 10; }
+    .section { margin-bottom: 1em; padding: 0.5em; background: rgba(255,255,255,0.3); border-radius: 4px; }
+    .section h3 { margin: 0 0 0.5em; color: #8b4513; }
+    input[type="number"] { width: 50px; padding: 0.2em; border: 1px solid #c69c6d; border-radius: 3px; }
+  </style>
+</head>
+<body>
+  <div id="map">
+    <button id="zoom-toggle" onclick="toggleZoom()">1x</button>
+    <canvas id="canvas" width="900" height="900"></canvas>
+  </div>
+  <div id="sidebar">
+    <div id="toast"></div>
+    <h1>🐪 Silk Road Caravan</h1>
+    <div class="section">
+      <h3>📊 Status</h3>
+      <div class="stats" id="stats"></div>
+    </div>
+    <div class="section" id="trade-section" style="display: none;">
+      <h3>🏪 Trading Post</h3>
+      <div id="trade-controls"></div>
+    </div>
+    <div class="section">
+      <h3>🎯 Actions</h3>
+      <div class="actions" id="actions"></div>
+    </div>
+    <div class="section">
+      <h3>📜 Journey Log</h3>
+      <div id="log"></div>
+    </div>
+    <div class="section">
+      <h3>🎒 Items</h3>
+      <div id="items-list"></div>
+    </div>
+    <div class="section">
+      <h3>🗺️ Cities Visited</h3>
+      <div id="cities-checklist"></div>
+    </div>
+  </div>
+  <script>
+    let toastTimeout;
+    function showToast(msg) {
+      const t = document.getElementById('toast');
+      t.textContent = msg;
+      t.style.opacity = 1;
+      clearTimeout(toastTimeout);
+      toastTimeout = setTimeout(() => { t.style.opacity = 0; }, 1500);
+    }
+
+    function addLog(msg) {
+      const log = document.getElementById('log');
+      const div = document.createElement('div');
+      div.textContent = msg;
+      log.appendChild(div);
+      log.scrollTop = log.scrollHeight;
+    }
+
+    const GRID_RADIUS = 6;
+    const size = 40;
+    const widthHex = size * Math.sqrt(3);
+    const heightHex = size * 2;
+    const vert = heightHex * 3/4;
+    const coords = [];
+    for (let q = -GRID_RADIUS; q <= GRID_RADIUS; q++) {
+      for (let r = -GRID_RADIUS; r <= GRID_RADIUS; r++) {
+        if (Math.abs(q + r) <= GRID_RADIUS) coords.push({ q, r });
+      }
+    }
+
+    function hexToPixel(q, r) {
+      return { 
+        x: widthHex * (q + r/2) * state.zoom + canvas.width/2, 
+        y: vert * r * state.zoom + canvas.height/2 
+      };
+    }
+    function hexDistance(a, b) {
+      return (Math.abs(a.q - b.q) + Math.abs(a.r - b.r) + Math.abs((a.q + a.r) - (b.q + b.r))) / 2;
+    }
+    function pixelToHex(x, y) {
+      const offsetX = (x - canvas.width/2) / state.zoom;
+      const offsetY = (y - canvas.height/2) / state.zoom;
+      const q = (Math.sqrt(3)/3 * offsetX - 1/3 * offsetY) / size;
+      const r = (2/3 * offsetY) / size;
+      return axialRound(q, r);
+    }
+    function axialRound(q, r) {
+      const s = -q - r;
+      let rq = Math.round(q), rr = Math.round(r), rs = Math.round(s);
+      const qdiff = Math.abs(rq - q), rdiff = Math.abs(rr - r), sdiff = Math.abs(rs - s);
+      if (qdiff > rdiff && qdiff > sdiff) rq = -rr - rs;
+      else if (rdiff > sdiff) rr = -rq - rs;
+      return { q: rq, r: rr };
+    }
+
+    function getViewDistance() {
+      return state.items.has('map_scrolls') ? 3 : 2;
+    }
+    function getNeighbors(pos) {
+      return coords.filter(c => hexDistance(c, pos) === 1);
+    }
+
+    const cities = [
+      { q: 0, r: 0, name: "Chang'an", emoji: "🏛️" },
+      { q: 4, r: -2, name: 'Samarkand', emoji: "🕌" },
+      { q: 6, r: -6, name: 'Antioch', emoji: "⛪" },
+      { q: -3, r: 4, name: 'Kashgar', emoji: "🏰" },
+      { q: -5, r: -1, name: 'Delhi', emoji: "🏘️" },
+      { q: 2, r: 4, name: 'Tashkent', emoji: "🏙️" },
+      { q: -2, r: -4, name: 'Bukhara', emoji: "🕌" },
+      { q: 5, r: 1, name: 'Baghdad', emoji: "🕌" },
+      { q: -4, r: -2, name: 'Merv', emoji: "🏛️" }
+    ];
+
+    const oases = [
+      { q: 3, r: 2, name: "Desert Oasis", emoji: "🌴" },
+      { q: -2, r: 3, name: "Palm Springs", emoji: "🌴" },
+      { q: 2, r: -3, name: "Mirage Wells", emoji: "🌴" },
+      { q: -3, r: -3, name: "Caravan Rest", emoji: "🌴" },
+      { q: 4, r: -5, name: "Golden Sands", emoji: "🌴" },
+      { q: -1, r: 5, name: "Emerald Pool", emoji: "🌴" }
+    ];
+
+    function getCity(q, r) {
+      return cities.find(city => city.q === q && city.r === r);
+    }
+
+    const gameItems = [
+      { id: 'compass', name: 'Compass', price: 30, description: 'Reduces movement cost by 1 (minimum 1) for all desert tiles' },
+      { id: 'food_preserves', name: 'Food Preserves', price: 24, description: 'Increases maximum food capacity to 35' },
+      { id: 'silk_bags', name: 'Silk Bags', price: 40, description: 'Increases cargo capacity to 30 items' },
+      { id: 'map_scrolls', name: 'Map Scrolls', price: 36, description: 'Increases view distance to 3 hexes' },
+      { id: 'camel_shoes', name: 'Camel Shoes', price: 20, description: 'Movement to cities and oases costs no supplies' }
+    ];
+
+    function getRandomCityItems() {
+      const cityItems = {};
+      cities.forEach(city => {
+        const numItems = Math.random() < 0.7 ? (Math.random() < 0.5 ? 0 : 1) : Math.random() < 0.6 ? 2 : 3;
+        if (numItems > 0) {
+          const shuffled = [...gameItems].sort(() => Math.random() - 0.5);
+          cityItems[city.name] = shuffled.slice(0, numItems);
+        } else {
+          cityItems[city.name] = [];
+        }
+      });
+      return cityItems;
+    }
+
+    function getOasis(q, r) {
+      return oases.find(oasis => oasis.q === q && oasis.r === r);
+    }
+
+    function canRest(q, r) {
+      return getCity(q, r) || getOasis(q, r);
+    }
+
+    let state = { 
+      funds: 20, 
+      supplies: { food: 25 }, 
+      reputation: 0, 
+      cargo: { silk: 0, spices: 0, pottery: 0 }, 
+      pos: { q: 0, r: 0 }, 
+      prices: {},
+      pathWear: {},
+      visitedCities: new Set(['Chang\'an']),
+      zoom: window.innerWidth > 1100 ? 2 : 1,
+      items: new Set(),
+      cityItems: {}
+    };
+    let lastMove = null;
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+
+    function getPathWear(q, r) {
+      const key = `${q},${r}`;
+      return state.pathWear[key] || 0;
+    }
+
+    function setPathWear(q, r, value) {
+      const key = `${q},${r}`;
+      state.pathWear[key] = Math.max(0, Math.min(200, value));
+    }
+
+    function updatePathWear() {
+      Object.keys(state.pathWear).forEach(key => {
+        state.pathWear[key] = Math.max(0, state.pathWear[key] - 1);
+        if (state.pathWear[key] === 0) {
+          delete state.pathWear[key];
+        }
+      });
+    }
+
+    function getMovementCost(q, r) {
+      const city = getCity(q, r);
+      const oasis = getOasis(q, r);
+      
+      if (city || oasis) return { food: 1 };
+      
+      const pathWear = getPathWear(q, r);
+      // Cost starts at 5 for untraveled, goes down to 1 for well-traveled (200 wear)
+      // Evenly distributed: 0-49=5, 50-99=4, 100-149=3, 150-199=2, 200=1
+      const cost = Math.max(1, 5 - Math.floor(pathWear / 40));
+      return { food: cost };
+    }
+
+    function generatePrices() {
+      const city = getCity(state.pos.q, state.pos.r);
+      if (!city) { state.prices = {}; return; }
+      const baseSilk = 5 + (state.pos.q + state.pos.r) * 0.5;
+      const baseSpices = 3 + (state.pos.q - state.pos.r) * 0.3;
+      const basePottery = 4 + Math.abs(state.pos.q) * 0.4;
+      state.prices = {
+        silk: Math.max(1, Math.round(baseSilk + (Math.random() * 2 - 1))),
+        spices: Math.max(1, Math.round(baseSpices + (Math.random() * 2 - 1))),
+        pottery: Math.max(1, Math.round(basePottery + (Math.random() * 2 - 1)))
+      };
+    }
+
+    function marketFluctuation() {
+      if (Math.random() < 0.2) {
+        // Affect 1/3 of all cities (rounded up)
+        const numCitiesToAffect = Math.ceil(cities.length / 3);
+        const shuffledCities = [...cities].sort(() => Math.random() - 0.5);
+        const affectedCities = shuffledCities.slice(0, numCitiesToAffect);
+        
+        let currentCityAffected = false;
+        const currentCity = getCity(state.pos.q, state.pos.r);
+        
+        affectedCities.forEach(city => {
+          // If we're currently in an affected city, update our visible prices
+          if (currentCity === city) {
+            currentCityAffected = true;
+            Object.keys(state.prices).forEach(item => {
+              if (Math.random() < 0.9) {
+                const delta = Math.random() < 0.5 ? 1 : -1;
+                state.prices[item] = Math.max(1, state.prices[item] + delta);
+              } else {
+                const delta = Math.floor((Math.random() * 5 + 1) * (Math.random() < 0.5 ? 1 : -1));
+                state.prices[item] = Math.max(1, state.prices[item] + delta);
+              }
+            });
+          }
+        });
+        
+        // Show notification
+        const cityNames = affectedCities.map(city => city.name).join(', ');
+        if (currentCityAffected) {
+          showToast(`Market prices fluctuated in: ${cityNames}`);
+        } else {
+          showToast(`Markets changed in: ${cityNames}`);
+        }
+      }
+    }
+
+    function drawMap() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      const viewDist = getViewDistance();
+      coords.forEach(c => {
+        const dist = hexDistance(c, state.pos);
+        const { x, y } = hexToPixel(c.q, c.r);
+        if (dist > viewDist) {
+          ctx.fillStyle = '#ccc'; ctx.strokeStyle = '#999'; ctx.lineWidth = 1;
+          ctx.beginPath();
+          for (let i = 0; i < 6; i++) {
+            const ang = Math.PI/180 * (60 * i - 30);
+            ctx[i === 0 ? 'moveTo' : 'lineTo'](x + size * state.zoom * Math.cos(ang), y + size * state.zoom * Math.sin(ang));
+          }
+          ctx.closePath(); ctx.fill(); ctx.stroke();
+          return;
+        }
+        
+        const city = getCity(c.q, c.r);
+        const oasis = getOasis(c.q, c.r);
+        const current = (c.q === state.pos.q && c.r === state.pos.r);
+        const pathWear = getPathWear(c.q, c.r);
+        
+        ctx.beginPath();
+        for (let i = 0; i < 6; i++) {
+          const ang = Math.PI/180 * (60 * i - 30);
+          ctx[i === 0 ? 'moveTo' : 'lineTo'](x + size * state.zoom * Math.cos(ang), y + size * state.zoom * Math.sin(ang));
+        }
+        ctx.closePath();
+        
+        if (city) {
+          ctx.fillStyle = current ? '#ffd580' : '#ffe0b3';
+        } else if (oasis) {
+          ctx.fillStyle = current ? '#90ee90' : '#98fb98';
+        } else {
+          let baseColor = current ? '#ffaced' : '#faf0f5';
+          
+          if (pathWear > 0) {
+            const wearIntensity = pathWear / 200;
+            const r = parseInt(baseColor.slice(1, 3), 16);
+            const g = parseInt(baseColor.slice(3, 5), 16);
+            const b = parseInt(baseColor.slice(5, 7), 16);
+            
+            const brownR = 139;
+            const brownG = 69;
+            const brownB = 19;
+            
+            const newR = Math.round(r + (brownR - r) * wearIntensity * 0.4);
+            const newG = Math.round(g + (brownG - g) * wearIntensity * 0.4);
+            const newB = Math.round(b + (brownB - b) * wearIntensity * 0.4);
+            
+            ctx.fillStyle = `rgb(${newR}, ${newG}, ${newB})`;
+          } else {
+            ctx.fillStyle = baseColor;
+          }
+        }
+        
+        ctx.fill();
+        ctx.lineWidth = current ? 4 : 1;
+        ctx.strokeStyle = city ? '#cc9a00' : oasis ? '#228b22' : '#c69c6d';
+        ctx.stroke();
+        
+        if (pathWear > 20) {
+          ctx.save();
+          ctx.globalAlpha = Math.min(0.8, pathWear / 200);
+          ctx.strokeStyle = '#8b4513';
+          ctx.lineWidth = Math.max(1, pathWear / 50) * state.zoom;
+          ctx.beginPath();
+          ctx.arc(x, y, size * state.zoom * 0.3, 0, 2 * Math.PI);
+          ctx.stroke();
+          ctx.restore();
+        }
+        
+        if (lastMove && c.q === lastMove.q && c.r === lastMove.r) {
+          ctx.beginPath(); 
+          ctx.arc(x, y, size * state.zoom / 2, 0, 2 * Math.PI); 
+          ctx.lineWidth = 3 * state.zoom; 
+          ctx.strokeStyle = 'gold'; 
+          ctx.stroke(); 
+          lastMove = null;
+        }
+        
+        if (city) {
+          ctx.fillStyle = '#8b4513';
+          ctx.font = `${12 * state.zoom}px sans-serif`;
+          ctx.textAlign = 'center';
+          ctx.fillText(city.emoji, x, y - 8 * state.zoom);
+          ctx.fillText(city.name, x, y + 8 * state.zoom);
+        } else if (oasis) {
+          ctx.fillStyle = '#228b22';
+          ctx.font = `${12 * state.zoom}px sans-serif`;
+          ctx.textAlign = 'center';
+          ctx.fillText(oasis.emoji, x, y - 8 * state.zoom);
+          ctx.fillText(oasis.name, x, y + 8 * state.zoom);
+        }
+        
+        if (current) {
+          ctx.fillStyle = '#ff6600';
+          ctx.font = `${20 * state.zoom}px sans-serif`;
+          ctx.textAlign = 'center';
+          ctx.fillText('🐪', x, y + 5 * state.zoom);
+        }
+      });
+    }
+
+    function getTotalCargo() {
+      return state.cargo.silk + state.cargo.spices + state.cargo.pottery;
+    }
+
+    function getMaxCargo() {
+      return state.items.has('silk_bags') ? 30 : 20;
+    }
+
+    function getMaxFood() {
+      return state.items.has('food_preserves') ? 35 : 25;
+    }
+
+    function updateItemsList() {
+      const itemsDiv = document.getElementById('items-list');
+      if (state.items.size === 0) {
+        itemsDiv.innerHTML = '<div style="color: #888; font-style: italic;">No items owned</div>';
+      } else {
+        itemsDiv.innerHTML = Array.from(state.items).map(itemId => {
+          const item = gameItems.find(i => i.id === itemId);
+          return `<div style="margin: 0.2em 0; cursor: help;" title="${item.description}">${item.name}</div>`;
+        }).join('');
+      }
+    }
+    function updateCitiesChecklist() {
+      const checklistDiv = document.getElementById('cities-checklist');
+      checklistDiv.innerHTML = cities.map(city => {
+        const visited = state.visitedCities.has(city.name);
+        return `<div style="${visited ? 'text-decoration: line-through; color: #888;' : ''}">${city.emoji} ${city.name}${visited ? ' ✓' : ''}</div>`;
+      }).join('');
+    }
+
+    function buyItem(itemId) {
+      const item = gameItems.find(i => i.id === itemId);
+      if (!item) return;
+      
+      if (state.items.has(itemId)) {
+        showToast('You already own this item!');
+        return;
+      }
+      
+      if (state.funds >= item.price) {
+        state.funds -= item.price;
+        state.items.add(itemId);
+        addLog(`Purchased ${item.name} for ${item.price} dirhams`);
+        updateUI();
+      } else {
+        showToast('Not enough funds!');
+      }
+    }
+
+    function updateUI() {
+      const city = getCity(state.pos.q, state.pos.r);
+      const oasis = getOasis(state.pos.q, state.pos.r);
+      const locationName = city ? city.name : oasis ? oasis.name : 'Wilderness';
+      
+      const totalCargo = getTotalCargo();
+      const maxCargo = getMaxCargo();
+      const maxFood = getMaxFood();
+      
+      document.getElementById('stats').innerHTML = `
+        <div>💰 Funds: ${state.funds} dirhams</div>
+        <div>🍞 Food: ${state.supplies.food}/${maxFood}</div>
+        <div>⭐ Reputation: ${state.reputation}</div>
+        <div>🎒 Cargo (${totalCargo}/${maxCargo}): Silk ${state.cargo.silk}, Spices ${state.cargo.spices}, Pottery ${state.cargo.pottery}</div>
+        <div>📍 Location: ${locationName}</div>
+      `;
+      
+      if (city) {
+        document.getElementById('trade-section').style.display = 'block';
+        
+        const cityItemsAvailable = state.cityItems[city.name] || [];
+        let itemsHtml = '';
+        
+        if (cityItemsAvailable.length > 0) {
+          itemsHtml = `
+            <div style="margin-bottom: 1em; border-top: 1px solid #d3bfa6; padding-top: 0.5em;">
+              <h4 style="margin: 0 0 0.5em; color: #8b4513;">Items for Sale</h4>
+              ${cityItemsAvailable.map(item => `
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5em;">
+                  <span style="cursor: help;" title="${item.description}">${item.name} (${item.price} dirhams)</span>
+                  <button onclick="buyItem('${item.id}')" ${state.items.has(item.id) || state.funds < item.price ? 'disabled' : ''} style="font-size: 0.8em; padding: 0.2em 0.4em;">
+                    ${state.items.has(item.id) ? 'Owned' : 'Buy'}
+                  </button>
+                </div>
+              `).join('')}
+            </div>
+          `;
+        }
+        
+        document.getElementById('trade-controls').innerHTML = `
+          ${Object.keys(state.prices).map(item => `
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.8em;">
+              <span style="font-weight: bold; min-width: 120px;">${item.charAt(0).toUpperCase() + item.slice(1)} (${state.prices[item]} dirhams)</span>
+              <div style="display: flex; gap: 0.3em;">
+                <button onclick="buyAllItem('${item}')" ${getTotalCargo() >= getMaxCargo() ? 'disabled' : ''} style="font-size: 0.85em; padding: 0.25em 0.45em;">Buy All</button>
+                <button onclick="buyOneItem('${item}')" ${getTotalCargo() >= getMaxCargo() ? 'disabled' : ''} style="font-size: 0.85em; padding: 0.25em 0.45em;">Buy One</button>
+                <button onclick="sellOneItem('${item}')" ${state.cargo[item] <= 0 ? 'disabled' : ''} style="font-size: 0.85em; padding: 0.25em 0.45em;">Sell One</button>
+                <button onclick="sellAllItem('${item}')" ${state.cargo[item] <= 0 ? 'disabled' : ''} style="font-size: 0.85em; padding: 0.25em 0.45em;">Sell All</button>
+              </div>
+            </div>
+          `).join('')}
+          ${itemsHtml}
+        `;
+      } else {
+        document.getElementById('trade-section').style.display = 'none';
+      }
+      
+      const canRestHere = canRest(state.pos.q, state.pos.r);
+      const cityOasisCost = state.items.has('camel_shoes') ? '0 supplies' : '1 supply';
+      document.getElementById('actions').innerHTML = `
+        <div>Click adjacent hexes to move</div>
+        <div>Desert tiles cost 1-5 supplies (less for worn paths)</div>
+        <div>Cities and oases cost ${cityOasisCost}</div>
+        <button onclick="restSupplies()" ${canRestHere && state.funds >= 5 ? '' : 'disabled'}>
+          Rest & Resupply (5 dirhams)${canRestHere ? '' : ' - Need city or oasis!'}
+        </button>
+      `;
+      
+      updateCitiesChecklist();
+      updateItemsList();
+    }
+
+    function buyAllItem(item) {
+      const maxByFunds = Math.floor(state.funds / state.prices[item]);
+      const maxByCargo = getMaxCargo() - getTotalCargo();
+      const qty = Math.min(maxByFunds, maxByCargo);
+      
+      if (qty <= 0) {
+        showToast(maxByCargo <= 0 ? 'Cargo full!' : 'Not enough funds!');
+        return;
+      }
+      
+      const cost = state.prices[item] * qty;
+      state.funds -= cost;
+      state.cargo[item] += qty;
+      addLog(`Bought ${qty} ${item} for ${cost} dirhams`);
+      updateUI();
+    }
+
+    function buyOneItem(item) {
+      const cost = state.prices[item];
+      const currentCargo = getTotalCargo();
+      
+      if (currentCargo >= getMaxCargo()) {
+        showToast('Cargo full!');
+        return;
+      }
+      
+      if (state.funds >= cost) {
+        state.funds -= cost;
+        state.cargo[item] += 1;
+        addLog(`Bought 1 ${item} for ${cost} dirhams`);
+        updateUI();
+      } else {
+        showToast('Not enough funds!');
+      }
+    }
+
+    function sellOneItem(item) {
+      if (state.cargo[item] >= 1) {
+        const revenue = state.prices[item];
+        state.funds += revenue;
+        state.cargo[item] -= 1;
+        addLog(`Sold 1 ${item} for ${revenue} dirhams`);
+        updateUI();
+      } else {
+        showToast(`No ${item} to sell!`);
+      }
+    }
+
+    function sellAllItem(item) {
+      const qty = state.cargo[item];
+      if (qty <= 0) {
+        showToast(`No ${item} to sell!`);
+        return;
+      }
+      
+      const revenue = state.prices[item] * qty;
+      state.funds += revenue;
+      state.cargo[item] = 0;
+      addLog(`Sold ${qty} ${item} for ${revenue} dirhams`);
+      updateUI();
+    }
+
+    function restSupplies() {
+      if (!canRest(state.pos.q, state.pos.r)) {
+        showToast('You can only rest in cities or oases!');
+        return;
+      }
+      
+      if (state.funds >= 5) {
+        state.funds -= 5;
+        state.supplies.food = Math.min(getMaxFood(), state.supplies.food + 20);
+        
+        const oasis = getOasis(state.pos.q, state.pos.r);
+        if (oasis) {
+          addLog(`Rested at ${oasis.name} oasis`);
+          state.supplies.food = Math.min(getMaxFood(), state.supplies.food + 10);
+        } else {
+          addLog('Rested and resupplied in the city');
+        }
+        
+        marketFluctuation();
+        
+        if (Math.random() < 0.15) {
+          const events = [
+            'Sandstorm! Lost 5 food.',
+            'Found hidden cache! Gained 10 food.',
+            'Bandits demanded tribute!',
+            'Met friendly merchants.',
+            'Discovered shortcut to nearby city.',
+            'Heard rumors of price changes.'
+          ];
+          const event = events[Math.floor(Math.random() * events.length)];
+          addLog(event);
+          if (event.includes('Lost 5 food')) state.supplies.food = Math.max(0, state.supplies.food - 5);
+          if (event.includes('Gained 10 food')) {
+            state.supplies.food = Math.min(getMaxFood(), state.supplies.food + 10);
+          }
+        }
+        
+        updateUI();
+        drawMap();
+      }
+    }
+
+    function moveToHex(targetQ, targetR) {
+      const target = { q: targetQ, r: targetR };
+      
+      if (!coords.some(c => c.q === targetQ && c.r === targetR)) {
+        console.log('Target hex not in grid:', targetQ, targetR);
+        return;
+      }
+      
+      const distance = hexDistance(state.pos, target);
+      console.log('Distance to target:', distance, 'from', state.pos, 'to', target);
+      
+      if (distance !== 1) {
+        showToast('Can only move to adjacent hexes!');
+        return;
+      }
+      
+      const movementCost = getMovementCost(targetQ, targetR);
+      
+      if (state.supplies.food < movementCost.food) {
+        showToast(`Need ${movementCost.food} food to travel there!`);
+        return;
+      }
+      
+      updatePathWear();
+      const currentWear = getPathWear(targetQ, targetR);
+      setPathWear(targetQ, targetR, currentWear + 20);
+      
+      state.supplies.food -= movementCost.food;
+      state.pos = target;
+      lastMove = target;
+      
+      // Check for market fluctuations after every move
+      marketFluctuation();
+      
+      const city = getCity(targetQ, targetR);
+      const oasis = getOasis(targetQ, targetR);
+      if (city) {
+        generatePrices();
+        if (!state.visitedCities.has(city.name)) {
+          state.visitedCities.add(city.name);
+          addLog(`First visit to ${city.name}! 🎉`);
+        } else {
+          addLog(`Arrived at ${city.name}`);
+        }
+      } else if (oasis) {
+        addLog(`Reached ${oasis.name} oasis`);
+      } else {
+        if (movementCost.food > 1) {
+          addLog(`Difficult desert crossing (${movementCost.food} supplies used)`);
+        } else {
+          addLog('Following well-worn path');
+        }
+      }
+      
+      updateUI();
+      drawMap();
+    }
+
+    canvas.addEventListener('click', e => {
+      const rect = canvas.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      const hex = pixelToHex(x, y);
+      console.log('Clicked hex:', hex, 'Current pos:', state.pos);
+      
+      const { x: pixelX, y: pixelY } = hexToPixel(hex.q, hex.r);
+      ctx.beginPath();
+      ctx.arc(pixelX, pixelY, 5 * state.zoom, 0, 2 * Math.PI);
+      ctx.fillStyle = 'red';
+      ctx.fill();
+      setTimeout(() => drawMap(), 200);
+      
+      moveToHex(hex.q, hex.r);
+    });
+
+    function toggleZoom() {
+      state.zoom = state.zoom === 1 ? 2 : 1;
+      document.getElementById('zoom-toggle').textContent = `${state.zoom}x`;
+      
+      // Update canvas size
+      if (state.zoom === 2) {
+        canvas.width = 1800;
+        canvas.height = 1800;
+      } else {
+        canvas.width = 900;
+        canvas.height = 900;
+      }
+      
+      // Update sidebar text size
+      const sidebar = document.getElementById('sidebar');
+      if (state.zoom === 2) {
+        sidebar.classList.add('zoomed');
+      } else {
+        sidebar.classList.remove('zoomed');
+      }
+      
+      drawMap();
+    }
+
+    // Initialize
+    function initializeGame() {
+      // Generate random items for each city
+      state.cityItems = getRandomCityItems();
+      
+      // Set initial canvas size and UI based on starting zoom
+      if (state.zoom === 2) {
+        canvas.width = 1800;
+        canvas.height = 1800;
+        document.getElementById('sidebar').classList.add('zoomed');
+        document.getElementById('zoom-toggle').textContent = '2x';
+      } else {
+        canvas.width = 900;
+        canvas.height = 900;
+        document.getElementById('zoom-toggle').textContent = '1x';
+      }
+      
+      generatePrices();
+      updateUI();
+      drawMap();
+      addLog('Journey begins in Chang\'an!');
+    }
+
+    initializeGame();
+  </script>
+</body>
+</html>
