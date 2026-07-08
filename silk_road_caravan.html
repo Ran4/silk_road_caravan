@@ -25,12 +25,38 @@
     .section { margin-bottom: 1em; padding: 0.5em; background: rgba(255,255,255,0.3); border-radius: 4px; }
     .section h3 { margin: 0 0 0.5em; color: #8b4513; }
     input[type="number"] { width: 50px; padding: 0.2em; border: 1px solid #c69c6d; border-radius: 3px; }
+    /* Guild Panel */
+    #guild-panel { display: none; position: absolute; bottom: 1em; left: 50%; transform: translateX(-50%); background: rgba(245, 235, 220, 0.95); border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.3); z-index: 20; padding: 0.75em 1em; box-sizing: border-box; max-width: calc(100% - 2em); }
+    #guild-panel.visible { display: block; }
+    .guild-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.4em; }
+    .guild-header h2 { margin: 0; color: #8b4513; font-size: 1.1em; }
+    .guild-close { background: none; color: #888; border: none; padding: 0.2em 0.5em; cursor: pointer; font-size: 1.1em; }
+    .guild-close:hover { color: #333; }
+    #guild-standing { margin-bottom: 0.5em; font-style: italic; color: #666; font-size: 0.9em; }
+    #guild-services { display: flex; flex-wrap: wrap; gap: 0.4em; }
+    .guild-service { background: #fff; border: 1px solid #c69c6d; border-radius: 4px; padding: 0.3em 0.7em; cursor: pointer; }
+    .guild-service:hover:not(.locked):not(.used) { background: #e8d1b3; }
+    .guild-service.locked { opacity: 0.5; cursor: not-allowed; }
+    .guild-service.used { opacity: 0.6; background: #d0d0d0; cursor: not-allowed; }
+    .guild-service .service-name { font-weight: bold; font-size: 0.9em; }
+    .guild-service .service-price { color: #228b22; font-size: 0.85em; }
+    .guild-service .service-desc { font-size: 0.75em; color: #666; }
+    #guild-donate { margin-top: 0.5em; padding-top: 0.4em; border-top: 1px solid #c69c6d; font-size: 0.9em; }
   </style>
 </head>
 <body>
   <div id="map">
     <button id="zoom-toggle" onclick="toggleZoom()">1x</button>
     <canvas id="canvas" width="900" height="900"></canvas>
+    <div id="guild-panel">
+      <div class="guild-header">
+        <h2 id="guild-name"></h2>
+        <button class="guild-close" onclick="closeGuildPanel()">✕ Close</button>
+      </div>
+      <div id="guild-standing"></div>
+      <div id="guild-services"></div>
+      <div id="guild-donate"></div>
+    </div>
   </div>
   <div id="sidebar">
     <div id="toast"></div>
@@ -125,7 +151,7 @@
 
     const cities = [
       { q: 0, r: 0, name: "Chang'an", emoji: "🏛️" },
-      { q: 4, r: -2, name: 'Samarkand', emoji: "🕌" },
+      { q: 3, r: 0, name: 'Samarkand', emoji: "🕌" },
       { q: 6, r: -6, name: 'Antioch', emoji: "⛪" },
       { q: -3, r: 4, name: 'Kashgar', emoji: "🏰" },
       { q: -5, r: -1, name: 'Delhi', emoji: "🏘️" },
@@ -183,6 +209,289 @@
       { id: 'boat', name: 'Boat', price: 50, description: 'Allows crossing water tiles (rivers, lakes, seas)' }
     ];
 
+    const guildTypes = {
+      caravan: {
+        name: 'Caravan Guild',
+        emoji: '🐪',
+        services: [
+          { id: 'route_info', name: 'Route Information', desc: 'Reveal path wear on visible tiles', price: 10, repGain: 2, minRep: 0 },
+          { id: 'camel_blessing', name: 'Camel Blessing', desc: 'Next 20 moves cost 1 less food', price: 25, repGain: 5, minRep: 20 }
+        ]
+      },
+      explorers: {
+        name: 'Explorers Guild',
+        emoji: '🧭',
+        services: [
+          { id: 'reveal_terrain', name: 'Reveal Terrain', desc: 'Show hexes within 5 tiles of this city', price: 15, repGain: 3, minRep: 0, oneTime: true },
+          { id: 'explorer_discount', name: 'Explorer Discount', desc: '50% off compass, map scrolls, boat everywhere', price: 30, repGain: 5, minRep: 20, oneTime: true },
+          { id: 'oasis_map', name: 'Oasis Map', desc: 'Mark all oases on your map', price: 40, repGain: 8, minRep: 50, oneTime: true }
+        ]
+      },
+      merchants: {
+        name: 'Merchants Guild',
+        emoji: '💰',
+        services: [
+          { id: 'price_report', name: 'Price Report', desc: 'View prices at 3 random cities', price: 8, repGain: 2, minRep: 0 },
+          { id: 'market_manipulation', name: 'Market Manipulation', desc: 'Increase price of a good by 2 here', price: 20, repGain: 4, minRep: 20 }
+        ]
+      },
+      smugglers: {
+        name: 'Smugglers Guild',
+        emoji: '🗡️',
+        services: [
+          { id: 'contraband_tip', name: 'Contraband Tip', desc: 'Reveals highest price for a random good', price: 12, repGain: 3, minRep: 0 },
+          { id: 'bribe_guards', name: 'Bribe Guards', desc: '+20 rep with another guild (7-day cooldown)', price: 50, repGain: 0, minRep: 30 }
+        ]
+      }
+    };
+
+    function assignGuildsToCity() {
+      const guildList = ['caravan', 'explorers', 'merchants', 'smugglers'];
+      const shuffledCities = [...cities].sort(() => Math.random() - 0.5);
+      state.cityGuilds = {};
+      guildList.forEach((guild, i) => {
+        if (shuffledCities[i]) {
+          state.cityGuilds[shuffledCities[i].name] = guild;
+        }
+      });
+      // Randomize donation rates (1-10 rep per 20 dirhams)
+      guildList.forEach(g => {
+        state.guildDonationRates[g] = Math.floor(Math.random() * 10) + 1;
+      });
+    }
+
+    function getReputationLevel(rep) {
+      if (rep <= -50) return { name: 'Shunned', canUse: false, message: 'The guild members flee at your approach!' };
+      if (rep < 0) return { name: 'Suspect', canUse: false, message: 'The guild refuses to deal with you.' };
+      if (rep < 20) return { name: 'Stranger', canUse: true, discount: 0 };
+      if (rep < 50) return { name: 'Known', canUse: true, discount: 0 };
+      if (rep < 80) return { name: 'Trusted', canUse: true, discount: 0.1 };
+      return { name: 'Honored', canUse: true, discount: 0.2 };
+    }
+
+    function getGuildForCurrentCity() {
+      const city = getCity(state.pos.q, state.pos.r);
+      if (!city) return null;
+      const guildType = state.cityGuilds[city.name];
+      if (!guildType) return null;
+      return { type: guildType, city: city.name, ...guildTypes[guildType] };
+    }
+
+    function showGuildPanel() {
+      const guild = getGuildForCurrentCity();
+      if (!guild) return;
+
+      const rep = state.guildReputation[guild.type];
+      const level = getReputationLevel(rep);
+
+      document.getElementById('guild-name').textContent = `${guild.emoji} ${guild.name}`;
+
+      if (!level.canUse) {
+        document.getElementById('guild-standing').textContent = `Standing: ${level.name} (${rep}) - ${level.message}`;
+        document.getElementById('guild-services').innerHTML = '';
+        document.getElementById('guild-donate').innerHTML = '';
+      } else {
+        const discountText = level.discount > 0 ? ` (${Math.round(level.discount * 100)}% discount!)` : '';
+        document.getElementById('guild-standing').textContent = `Standing: ${level.name} (${rep})${discountText}`;
+
+        let servicesHtml = '';
+        guild.services.forEach(service => {
+          const isLocked = rep < service.minRep;
+          const isUsed = service.oneTime && state.usedServices.has(service.id);
+          const currentDay = Math.floor(state.time / HOURS_PER_DAY);
+          const isOnCooldown = service.id === 'bribe_guards' && (currentDay - state.guildEffects.lastBribeDay < 7);
+          const cooldownDays = isOnCooldown ? 7 - (currentDay - state.guildEffects.lastBribeDay) : 0;
+          const price = Math.round(service.price * (1 - level.discount));
+          const canAfford = state.funds >= price;
+
+          let classes = 'guild-service';
+          if (isLocked) classes += ' locked';
+          if (isUsed || isOnCooldown) classes += ' used';
+
+          let statusText = '';
+          if (isLocked) statusText = ` [Need ${service.minRep} rep]`;
+          else if (isUsed) statusText = ' [Already used]';
+          else if (isOnCooldown) statusText = ` [${cooldownDays} day${cooldownDays > 1 ? 's' : ''} cooldown]`;
+
+          const canUse = !isLocked && !isUsed && !isOnCooldown && canAfford;
+          servicesHtml += `
+            <div class="${classes}" onclick="${canUse ? `useGuildService('${service.id}')` : ''}">
+              <div class="service-name">${service.name}${statusText}</div>
+              <div class="service-price">${price} dirhams</div>
+              <div class="service-desc">${service.desc}</div>
+            </div>
+          `;
+        });
+        document.getElementById('guild-services').innerHTML = servicesHtml;
+
+        const donateRate = state.guildDonationRates[guild.type];
+        document.getElementById('guild-donate').innerHTML = `
+          <button onclick="donateToGuild()" ${state.funds < 20 ? 'disabled' : ''}>
+            Donate 20 dirhams (+${donateRate} reputation)
+          </button>
+        `;
+      }
+
+      document.getElementById('guild-panel').classList.add('visible');
+    }
+
+    function closeGuildPanel() {
+      document.getElementById('guild-panel').classList.remove('visible');
+    }
+
+    function donateToGuild() {
+      const guild = getGuildForCurrentCity();
+      if (!guild || state.funds < 20) return;
+
+      state.funds -= 20;
+      const gain = state.guildDonationRates[guild.type];
+      state.guildReputation[guild.type] = Math.min(100, state.guildReputation[guild.type] + gain);
+      addLog(`Donated 20 dirhams to ${guild.name} (+${gain} reputation)`);
+      showGuildPanel();
+      updateUI();
+    }
+
+    function useGuildService(serviceId) {
+      const guild = getGuildForCurrentCity();
+      if (!guild) return;
+
+      const service = guild.services.find(s => s.id === serviceId);
+      if (!service) return;
+
+      const rep = state.guildReputation[guild.type];
+      const level = getReputationLevel(rep);
+      if (!level.canUse || rep < service.minRep) return;
+      if (service.oneTime && state.usedServices.has(serviceId)) return;
+
+      const price = Math.round(service.price * (1 - level.discount));
+      if (state.funds < price) {
+        showToast('Not enough funds!');
+        return;
+      }
+
+      state.funds -= price;
+      state.guildReputation[guild.type] = Math.min(100, rep + service.repGain);
+      if (service.oneTime) state.usedServices.add(serviceId);
+
+      // Execute service effect
+      switch (serviceId) {
+        case 'route_info': useRouteInfo(); break;
+        case 'camel_blessing': useCamelBlessing(); break;
+        case 'reveal_terrain': useRevealTerrain(guild.city); break;
+        case 'explorer_discount': useExplorerDiscount(); break;
+        case 'oasis_map': useOasisMap(); break;
+        case 'price_report': usePriceReport(); break;
+        case 'market_manipulation': useMarketManipulation(); break;
+        case 'contraband_tip': useContrabandTip(); break;
+        case 'bribe_guards': useBribeGuards(); break;
+      }
+
+      addLog(`Used ${service.name} from ${guild.name}`);
+      showGuildPanel();
+      updateUI();
+      drawMap();
+    }
+
+    // Service implementations
+    function useRouteInfo() {
+      const viewDist = getViewDistance();
+      let info = 'Path wear: ';
+      coords.forEach(c => {
+        if (hexDistance(c, state.pos) <= viewDist) {
+          const wear = getPathWear(c.q, c.r);
+          if (wear > 0) {
+            info += `(${c.q},${c.r}):${wear} `;
+          }
+        }
+      });
+      addLog(info || 'No worn paths nearby.');
+      showToast('Path wear revealed in log!');
+    }
+
+    function useCamelBlessing() {
+      state.guildEffects.camelBlessing = 20;
+      showToast('Camel Blessing active for 20 moves!');
+    }
+
+    function useRevealTerrain(cityName) {
+      if (!state.guildEffects.revealedCities.includes(cityName)) {
+        state.guildEffects.revealedCities.push(cityName);
+      }
+      showToast(`Terrain around ${cityName} revealed!`);
+    }
+
+    function useExplorerDiscount() {
+      state.guildEffects.explorerDiscount = true;
+      showToast('50% off explorer items permanently!');
+    }
+
+    function useOasisMap() {
+      state.guildEffects.oasisMapRevealed = true;
+      showToast('All oases marked on map!');
+    }
+
+    function usePriceReport() {
+      const currentCity = getCity(state.pos.q, state.pos.r);
+      const otherCities = cities.filter(c => c.name !== currentCity?.name);
+      const selected = otherCities.sort(() => Math.random() - 0.5).slice(0, 3);
+
+      selected.forEach(city => {
+        const prices = state.cityPrices[city.name];
+        const dist = hexDistance(city, state.pos);
+        addLog(`${city.name} (${dist} away): Silk ${prices.silk}, Spices ${prices.spices}, Pottery ${prices.pottery}`);
+      });
+      showToast('Price report in log!');
+    }
+
+    function useMarketManipulation() {
+      const goods = ['silk', 'spices', 'pottery'];
+      const good = goods[Math.floor(Math.random() * goods.length)];
+      const city = getCity(state.pos.q, state.pos.r);
+      if (city && state.cityPrices[city.name]) {
+        state.cityPrices[city.name][good] += 2;
+        state.prices[good] += 2;
+        addLog(`${good.charAt(0).toUpperCase() + good.slice(1)} price increased by 2 in ${city.name}!`);
+        showToast(`${good} price +2!`);
+      }
+    }
+
+    function useContrabandTip() {
+      const goods = ['silk', 'spices', 'pottery'];
+      const good = goods[Math.floor(Math.random() * goods.length)];
+      let bestCity = null;
+      let bestPrice = 0;
+
+      cities.forEach(city => {
+        const price = state.cityPrices[city.name]?.[good] || 0;
+        if (price > bestPrice) {
+          bestPrice = price;
+          bestCity = city;
+        }
+      });
+
+      if (bestCity) {
+        addLog(`Tip: ${good.charAt(0).toUpperCase() + good.slice(1)} sells for ${bestPrice} in ${bestCity.name}!`);
+        showToast(`${good} best at ${bestCity.name}!`);
+      }
+    }
+
+    function useBribeGuards() {
+      const currentDay = Math.floor(state.time / HOURS_PER_DAY);
+      if (currentDay - state.guildEffects.lastBribeDay < 7) {
+        showToast('Bribe cooldown not ready!');
+        return;
+      }
+
+      const guild = getGuildForCurrentCity();
+      const otherGuilds = Object.keys(guildTypes).filter(g => g !== guild?.type);
+      const targetGuild = otherGuilds[Math.floor(Math.random() * otherGuilds.length)];
+
+      state.guildReputation[targetGuild] = Math.min(100, state.guildReputation[targetGuild] + 20);
+      state.guildEffects.lastBribeDay = currentDay;
+      addLog(`Bribed guards: +20 reputation with ${guildTypes[targetGuild].name}!`);
+      showToast(`+20 rep with ${guildTypes[targetGuild].name}!`);
+    }
+
     function getRandomCityItems() {
       const cityItems = {};
       cities.forEach(city => {
@@ -218,7 +527,19 @@
       zoom: window.innerWidth > 1100 ? 2 : 1,
       items: new Set(),
       cityItems: {},
-      time: 0
+      time: 0,
+      // Guild system
+      guildReputation: { caravan: 10, explorers: 10, merchants: 10, smugglers: 10 },
+      guildDonationRates: {},
+      cityGuilds: {},
+      usedServices: new Set(),
+      guildEffects: {
+        camelBlessing: 0,
+        explorerDiscount: false,
+        revealedCities: [],
+        oasisMapRevealed: false,
+        lastBribeDay: -999
+      }
     };
     let lastMove = null;
     const canvas = document.getElementById('canvas');
@@ -254,7 +575,13 @@
       const pathWear = getPathWear(q, r);
       // Cost starts at 5 for untraveled, goes down to 1 for well-traveled (200 wear)
       // Evenly distributed: 0-49=5, 50-99=4, 100-149=3, 150-199=2, 200=1
-      const cost = Math.max(1, 5 - Math.floor(pathWear / 40));
+      let cost = Math.max(1, 5 - Math.floor(pathWear / 40));
+
+      // Apply camel blessing discount
+      if (state.guildEffects.camelBlessing > 0) {
+        cost = Math.max(1, cost - 1);
+      }
+
       return { food: cost };
     }
 
@@ -327,7 +654,12 @@
         marketFluctuation();
       }
 
-      // Future daily events can be added here
+      // Guild reputation decay toward 10
+      Object.keys(state.guildReputation).forEach(guild => {
+        const rep = state.guildReputation[guild];
+        if (rep > 10) state.guildReputation[guild]--;
+        else if (rep < 10) state.guildReputation[guild]++;
+      });
     }
 
     function drawMap() {
@@ -336,7 +668,25 @@
       coords.forEach(c => {
         const dist = hexDistance(c, state.pos);
         const { x, y } = hexToPixel(c.q, c.r);
-        if (dist > viewDist) {
+
+        // Check if visible due to guild effects
+        let isVisible = dist <= viewDist;
+        if (!isVisible) {
+          // Check revealed cities (within 5 tiles)
+          for (const cityName of state.guildEffects.revealedCities) {
+            const revealedCity = cities.find(city => city.name === cityName);
+            if (revealedCity && hexDistance(c, revealedCity) <= 5) {
+              isVisible = true;
+              break;
+            }
+          }
+          // Check oasis map
+          if (state.guildEffects.oasisMapRevealed && getOasis(c.q, c.r)) {
+            isVisible = true;
+          }
+        }
+
+        if (!isVisible) {
           ctx.fillStyle = '#ccc'; ctx.strokeStyle = '#999'; ctx.lineWidth = 1;
           ctx.beginPath();
           for (let i = 0; i < 6; i++) {
@@ -476,16 +826,23 @@
     function buyItem(itemId) {
       const item = gameItems.find(i => i.id === itemId);
       if (!item) return;
-      
+
       if (state.items.has(itemId)) {
         showToast('You already own this item!');
         return;
       }
-      
-      if (state.funds >= item.price) {
-        state.funds -= item.price;
+
+      // Apply explorer discount for compass, map_scrolls, boat
+      let price = item.price;
+      const explorerItems = ['compass', 'map_scrolls', 'boat'];
+      if (state.guildEffects.explorerDiscount && explorerItems.includes(itemId)) {
+        price = Math.round(price * 0.5);
+      }
+
+      if (state.funds >= price) {
+        state.funds -= price;
         state.items.add(itemId);
-        addLog(`Purchased ${item.name} for ${item.price} dirhams`);
+        addLog(`Purchased ${item.name} for ${price} dirhams`);
         updateUI();
       } else {
         showToast('Not enough funds!');
@@ -706,6 +1063,11 @@
       state.pos = target;
       lastMove = target;
 
+      // Decrement camel blessing counter
+      if (state.guildEffects.camelBlessing > 0) {
+        state.guildEffects.camelBlessing--;
+      }
+
       // Increment time (hours) and check for new day
       state.time++;
       if (state.time % HOURS_PER_DAY === 0) {
@@ -727,16 +1089,22 @@
         } else {
           addLog(`Arrived at ${city.name}`);
         }
+        // Show guild panel if city has a guild
+        if (state.cityGuilds[city.name]) {
+          showGuildPanel();
+        }
       } else if (oasis) {
         addLog(`Reached ${oasis.name} oasis`);
+        closeGuildPanel();
       } else {
         if (movementCost.food > 1) {
           addLog(`Difficult desert crossing (${movementCost.food} supplies used)`);
         } else {
           addLog('Following well-worn path');
         }
+        closeGuildPanel();
       }
-      
+
       updateUI();
       drawMap();
     }
@@ -786,7 +1154,10 @@
     function initializeGame() {
       // Generate random items for each city
       state.cityItems = getRandomCityItems();
-      
+
+      // Assign guilds to cities
+      assignGuildsToCity();
+
       // Set initial canvas size and UI based on starting zoom
       if (state.zoom === 2) {
         canvas.width = 1800;
